@@ -59,10 +59,10 @@ CONTAINS
         END IF
         
         ! Compute (interpolate) the gains based on previously commanded blade pitch angles and lookup table:
-        LocalVar%PC_KP = interp1d(CntrPar%PC_GS_angles, CntrPar%PC_GS_KP, LocalVar%BlPitchCMeasF, ErrVar) ! Proportional gain
-        LocalVar%PC_KI = interp1d(CntrPar%PC_GS_angles, CntrPar%PC_GS_KI, LocalVar%BlPitchCMeasF, ErrVar) ! Integral gain
-        LocalVar%PC_KD = interp1d(CntrPar%PC_GS_angles, CntrPar%PC_GS_KD, LocalVar%BlPitchCMeasF, ErrVar) ! Derivative gain
-        LocalVar%PC_TF = interp1d(CntrPar%PC_GS_angles, CntrPar%PC_GS_TF, LocalVar%BlPitchCMeasF, ErrVar) ! TF gains (derivative filter) !NJA - need to clarify
+        LocalVar%PC_KP = interp1d(CntrPar%PC_GS_angles, CntrPar%PC_GS_KP, LocalVar%PC_PitComTF, ErrVar) ! Proportional gain
+        LocalVar%PC_KI = interp1d(CntrPar%PC_GS_angles, CntrPar%PC_GS_KI, LocalVar%PC_PitComTF, ErrVar) ! Integral gain
+        LocalVar%PC_KD = interp1d(CntrPar%PC_GS_angles, CntrPar%PC_GS_KD, LocalVar%PC_PitComTF, ErrVar) ! Derivative gain
+        LocalVar%PC_TF = interp1d(CntrPar%PC_GS_angles, CntrPar%PC_GS_TF, LocalVar%PC_PitComTF, ErrVar) ! TF gains (derivative filter) !NJA - need to clarify
         
         ! Compute the collective pitch command associated with the proportional and integral gains:
         LocalVar%PC_PitComT = PIController(LocalVar%PC_SpdErr, LocalVar%PC_KP, LocalVar%PC_KI, LocalVar%PC_MinPit, LocalVar%PC_MaxPit, LocalVar%DT, LocalVar%BlPitch(1), LocalVar%piP, LocalVar%restart, objInst%instPI)
@@ -149,9 +149,9 @@ CONTAINS
             LocalVar%PitCom_SD = LocalVar%PitCom
         ! If shutdown is not triggered, PitCom_SD tracks PitCom.
         ELSE
-            IF (CntrPar%SD_Method == 1 .OR. CntrPar%SD_Method == 2) THEN
+            IF (CntrPar%SD_Method == 1) THEN    !Only SD_Method==1 supported for now 
                 DO K = 1,LocalVar%NumBl
-                    LocalVar%PitCom_SD(K) = LocalVar%PitCom_SD(K) + LocalVar%SD_MaxPitchRate*LocalVar%DT
+                    LocalVar%PitCom_SD(K) = LocalVar%PitCom_SD(K) + CntrPar%SD_MaxPitchRate*LocalVar%DT
                 END DO
             ENDIF
             LocalVar%PitCom = LocalVar%PitCom_SD
@@ -240,7 +240,7 @@ CONTAINS
         IF (CntrPar%VS_FBP == VS_FBP_Variable_Pitch) THEN 
             ! Variable pitch mode        
             IF (CntrPar%VS_ConstPower == VS_Mode_ConstPwr) THEN
-                LocalVar%VS_MaxTq = min(LocalVar%VS_ConstPwr_GenTq, CntrPar%VS_MaxTq)
+                LocalVar%VS_MaxTq = min(LocalVar%VS_ConstPwr_GenTq * LocalVar%PRC_R_Torque, CntrPar%VS_MaxTq)
             ELSE
                 LocalVar%VS_MaxTq = CntrPar%VS_RtTq * LocalVar%PRC_R_Torque
             END IF
@@ -305,8 +305,8 @@ CONTAINS
         IF (LocalVar%SD_Trigger == 0) THEN
             LocalVar%GenTq_SD = LocalVar%GenTq
         ELSE 
-            IF (CntrPar%SD_Method == 1 .OR. CntrPar%SD_Method == 2) THEN
-                LocalVar%GenTq_SD = LocalVar%GenTq_SD - LocalVar%SD_MaxTorqueRate*LocalVar%DT
+            IF (CntrPar%SD_Method == 1) THEN    !Only SD_Method==1 supported for now 
+                LocalVar%GenTq_SD = LocalVar%GenTq_SD - CntrPar%SD_MaxTorqueRate*LocalVar%DT
                 LocalVar%GenTq_SD = saturate(LocalVar%GenTq_SD, CntrPar%VS_MinTq, CntrPar%VS_MaxTq)
             ENDIF
             LocalVar%GenTq = LocalVar%GenTq_SD
@@ -384,6 +384,7 @@ CONTAINS
         ! Allocate Variables
         REAL(DbKi), SAVE :: NacVaneOffset                          ! For offset control
         INTEGER, SAVE :: YawState                               ! Yawing left(-1), right(1), or stopped(0)
+        REAL(DbKi)       :: WindDir                                ! Instantaneous wind dind direction, equal to turbine nacelle heading plus the measured vane angle (deg)
         REAL(DbKi)       :: WindDirPlusOffset                     ! Instantaneous wind direction minus the assigned vane offset (deg)
         REAL(DbKi)       :: WindDirPlusOffsetCosF                 ! Time-filtered x-component of WindDirPlusOffset (deg)
         REAL(DbKi)       :: WindDirPlusOffsetSinF                 ! Time-filtered y-component of WindDirPlusOffset (deg)
@@ -397,8 +398,8 @@ CONTAINS
         IF (CntrPar%Y_ControlMode == 1) THEN
 
             ! Compass wind directions in degrees
-            LocalVar%WindDir = wrap_180(LocalVar%NacHeading + LocalVar%NacVane)
-
+            WindDir = wrap_360(LocalVar%NacHeading + LocalVar%NacVane)
+            
             ! Initialize
             IF (LocalVar%iStatus == 0) THEN
                 YawState = 0
@@ -413,7 +414,7 @@ CONTAINS
             ENDIF
 
             ! Update filtered wind direction
-            WindDirPlusOffset = wrap_180(LocalVar%WindDir + NacVaneOffset) ! (deg)
+            WindDirPlusOffset = wrap_180(WindDir + NacVaneOffset) ! (deg)
             WindDirPlusOffsetCosF = LPFilter(cos(WindDirPlusOffset*D2R), LocalVar%DT, CntrPar%F_YawErr, LocalVar%FP, LocalVar%iStatus, .FALSE., objInst%instLPF) ! (-)
             WindDirPlusOffsetSinF = LPFilter(sin(WindDirPlusOffset*D2R), LocalVar%DT, CntrPar%F_YawErr, LocalVar%FP, LocalVar%iStatus, .FALSE., objInst%instLPF) ! (-)
             NacHeadingTarget = wrap_180(atan2(WindDirPlusOffsetSinF, WindDirPlusOffsetCosF) * R2D) ! (deg)
@@ -437,6 +438,7 @@ CONTAINS
                     YawState = 0 
                 ELSE
                     ! persist
+                    LocalVar%NacHeading = wrap_360(LocalVar%NacHeading + CntrPar%Y_Rate*LocalVar%DT)
                     YawRateCom = CntrPar%Y_Rate
                     YawState = 1 
                 ENDIF
@@ -448,6 +450,7 @@ CONTAINS
                     YawState = 0 
                 ELSE
                     ! persist
+                    LocalVar%NacHeading = wrap_360(LocalVar%NacHeading - CntrPar%Y_Rate*LocalVar%DT)
                     YawRateCom = -CntrPar%Y_Rate
                     YawState = -1 
                 ENDIF
@@ -1223,6 +1226,102 @@ SUBROUTINE StructuralControl(avrSWAP, CntrPar, LocalVar, objInst, ErrVar)
         inst = inst + 1
         
     END FUNCTION ResController
+!-------------------------------------------------------------------------------------------------------------------------------
+    REAL(DbKi) FUNCTION FakeFloatingFeedback(LocalVar, CntrPar, objInst, ErrVar)
+    ! FloatingFeedback defines a minimum blade pitch angle based on a lookup table provided by DISON.IN
+    !       Fl_Mode = 0, No feedback
+    !       Fl_Mode = 1, Proportional feedback of nacelle velocity (translational)
+    !       Fl_Mode = 2, Proportional feedback of nacelle velocity (rotational)
+        USE ROSCO_Types, ONLY : LocalVariables, ControlParameters, ObjectInstances, ErrorVariables
+        IMPLICIT NONE
+        ! Inputs
+        TYPE(ControlParameters), INTENT(IN)     :: CntrPar
+        TYPE(LocalVariables), INTENT(INOUT)     :: LocalVar
+        TYPE(ObjectInstances), INTENT(INOUT)    :: objInst
+        TYPE(ErrorVariables), INTENT(INOUT)     :: ErrVar
+        ! Allocate Variables
+        REAL(DbKi)                      :: FA_vel ! Tower fore-aft velocity [m/s]
+        REAL(DbKi)                      :: NacIMU_FA_vel ! Tower fore-aft pitching velocity [rad/s]
 
+        ! Gain scheduling
+        LocalVar%Kp_Float = interp1d(CntrPar%Fl_U,CntrPar%Fl_Kp,LocalVar%WE_Vw_F,ErrVar)       ! Schedule based on WSE
+
+        ! Calculate floating contribution to pitch command
+        FA_vel = PIController(LocalVar%FA_AccF, 0.0_DbKi, 1.0_DbKi, -100.0_DbKi , 100.0_DbKi ,LocalVar%DT, 0.0_DbKi, LocalVar%piP, LocalVar%restart, objInst%instPI) ! NJA: should neve>
+        NacIMU_FA_vel = PIController(LocalVar%NacIMU_FA_AccF, 0.0_DbKi, 1.0_DbKi, -100.0_DbKi , 100.0_DbKi ,LocalVar%DT, 0.0_DbKi, LocalVar%piP, LocalVar%restart, objInst%instPI) ! NJ>
+! Mod made by A. Wright: use the gain scheduled value of KPfloat in the floating fb equ's below (instead of the old value of CntrPar%Fl_Kp), for either value of CntrPar%Fl_Mode...    >
+        if (CntrPar%Fl_Mode == 1) THEN
+            FakeFloatingFeedback = (0.0_DbKi - FA_vel) * LocalVar%Kp_Float ! Mod made by A. Wright: use the gain scheduled value of KPfloat in the floating fb equ's below (instead of the >
+        ELSEIF (CntrPar%Fl_Mode == 2) THEN
+            FakeFloatingFeedback = (0.0_DbKi - NacIMU_FA_vel) *LocalVar%Kp_Float ! Mod made by A. Wright: use the gain scheduled value of KPfloat in the floating fb equ's below (instead o>
+        END IF
+
+    END FUNCTION FakeFloatingFeedback
+!-------------------------------------------------------------------------------------------------------------------------------
+SUBROUTINE PlatformProportionalResControl(CntrPar, LocalVar, DebugVar, objInst)
+    ! Platform Pitch Proportional Resonant Control
+    !       PPPR_Mode = 0, Inactive
+    !       PPPR_Mode = 1, Active
+
+    USE ROSCO_Types,       ONLY : ControlParameters, LocalVariables, DebugVariables, ObjectInstances
+
+    TYPE(ControlParameters), INTENT(INOUT) :: CntrPar
+    TYPE(DebugVariables),    INTENT(INOUT) :: DebugVar
+    TYPE(LocalVariables),    INTENT(INOUT) :: LocalVar
+    TYPE(ObjectInstances),   INTENT(INOUT) :: objInst
+
+    ! Local variables
+    REAL(DbKi)     :: phi_error              ! platform pitch error [rad]
+    REAL(DbKi)     :: phi_control_out        ! controller output [deg]
+    REAL(DbKi)     :: tau_error              ! Gen Torque error [?]
+    REAL(DbKi)     :: tau_control_out        ! controller output [?]
+    REAL(DbKi)     :: phi_ref                ! platform pitch reference [rad]    
+    REAL(DbKi)     :: tau_ref                ! generator torque reference [Nm]
+    INTEGER(IntKi) :: K                      ! Index used for looping through blades
+    REAL(DbKi)     :: StartTime = 0.0        ! Start time of closed-loop PR Control
+
+    ! Initialize 
+
+    phi_ref =           0.0_DbKi
+    tau_ref =           0.0_DbKi
+    phi_control_out =   0.0_DbKi
+    tau_control_out =   0.0_DbKi
+
+
+    ! If Controller Active
+    IF (CntrPar%PPPR_Mode == 1 .AND. LocalVar%Time .GT. 30.0_DbKi) THEN
+
+
+        ! Resonant controller (returns pitch offset)
+        IF (LocalVar%Time .GT. StartTime) THEN
+	    
+	    ! Compute errors for phi and tau as actual vs sinusoidal reference
+
+            phi_ref = CntrPar%PPPR_amp_phi*sin(LocalVar%Time*CntrPar%PPPR_freq_phi + CntrPar%Phi_phaseoffset*D2R)
+	    phi_error = LocalVar%PtfmRDY - phi_ref
+
+	    tau_ref = CntrPar%PPPR_amp_omega*sin(LocalVar%Time*CntrPar%PPPR_freq_omega + CntrPar%Omega_phaseoffset*D2R)
+            tau_error = LocalVar%GenTq - tau_ref
+
+            phi_control_out = ResController(phi_error, CntrPar%PPPR_CntrGains_phi(1), CntrPar%PPPR_CntrGains_phi(2), CntrPar%PPPR_freq_phi, &
+                                                      CntrPar%PC_MinPit, CntrPar%PC_MaxPit, LocalVar%DT, LocalVar%resP, LocalVar%restart, objInst%instRes_phi)
+            tau_control_out = ResController(tau_error, CntrPar%PPPR_CntrGains_omega(1), CntrPar%PPPR_CntrGains_omega(2), CntrPar%PPPR_freq_omega, &
+                                                      CntrPar%VS_MinTq, CntrPar%VS_MaxTq, LocalVar%DT, LocalVar%resP, LocalVar%restart, objInst%instRes_tau)
+
+        ENDIF
+
+
+        ! Apply pitch offset equally to all blades
+        DO K = 1, LocalVar%NumBl
+            LocalVar%PitCom(K) = LocalVar%PitCom(K) + phi_control_out
+        END DO
+
+	! Apply generator offset
+
+	LocalVar%GenTq = LocalVar%GenTq + tau_control_out
+
+    END IF
+
+END SUBROUTINE PlatformProportionalResControl
 !-------------------------------------------------------------------------------------------------------------------------------
 END MODULE Controllers
