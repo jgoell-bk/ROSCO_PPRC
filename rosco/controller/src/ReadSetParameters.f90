@@ -52,9 +52,8 @@ CONTAINS
         LocalVar%rootMOOP(2)        = avrSWAP(31)
         LocalVar%rootMOOP(3)        = avrSWAP(32)
         LocalVar%NacHeading         = avrSWAP(37) * R2D
-        LocalVar%FA_Acc_TT          = avrSWAP(53)  ! This is the translational acceleration of the tower top in the non-rotating frame
-        LocalVar%SS_Acc_TT          = avrSWAP(54)  ! This is the translational acceleration of the tower top in the non-rotating frame
-        LocalVar%NacIMU_FA_RAcc      = avrSWAP(83)  ! This is the rotational aceleration of the nacelle in the shaft frame
+        LocalVar%FA_Acc             = avrSWAP(53)
+        LocalVar%NacIMU_FA_Acc      = avrSWAP(83)
         LocalVar%Azimuth            = avrSWAP(60)
         LocalVar%NumBl              = NINT(avrSWAP(61))
 
@@ -126,10 +125,6 @@ CONTAINS
             LocalVar%restart = .False.
         ENDIF
 
-        ! FA_Acc_TT is in the non-rotating tower-top frame, so we need to convert it to the rotating (nacelle) frame of reference
-        LocalVar%FA_Acc_Nac = LocalVar%FA_Acc_TT * COS(LocalVar%NacHeading * D2R) + LocalVar%SS_Acc_TT * SIN(LocalVar%NacHeading * D2R)
-
-
         ! Increment timestep counter
         IF (LocalVar%iStatus == 0 .AND. LocalVar%Time == 0) THEN
             LocalVar%n_DT = 0
@@ -182,6 +177,8 @@ CONTAINS
         objInst%instNotch       = 1
         objInst%instPI          = 1
         objInst%instRes         = 1
+	objInst%instRes_phi     = 1   ! phi loop uses slot 1 in resP arrays
+	objInst%instRes_tau     = 2   ! tau loop uses slot 2
         objInst%instRL          = 1
         
         ! Set unused outputs to zero (See Appendix A of Bladed User's Guide):
@@ -400,6 +397,7 @@ CONTAINS
         CALL ParseInput(FileLines,'PA_Mode',         CntrPar%PA_Mode,           accINFILE(1), ErrVar, UnEc=UnEc)
         CALL ParseInput(FileLines,'PF_Mode',         CntrPar%PF_Mode,           accINFILE(1), ErrVar, UnEc=UnEc)
         CALL ParseInput(FileLines,'AWC_Mode',        CntrPar%AWC_Mode,          accINFILE(1), ErrVar, UnEc=UnEc)
+        CALL ParseInput(FileLines,'PPPR_Mode',       CntrPar%PPPR_Mode,         accINFILE(1), ErrVar, UnEc=UnEc)
         CALL ParseInput(FileLines,'Ext_Mode',        CntrPar%Ext_Mode,          accINFILE(1), ErrVar, UnEc=UnEc)
 		CALL ParseInput(FileLines,'ZMQ_Mode',        CntrPar%ZMQ_Mode,          accINFILE(1), ErrVar, UnEc=UnEc)
 		CALL ParseInput(FileLines,'CC_Mode',         CntrPar%CC_Mode,           accINFILE(1), ErrVar, UnEc=UnEc)
@@ -567,11 +565,8 @@ CONTAINS
         CALL ParseInput(FileLines,  'SD_GenSpdCornerFreq',   CntrPar%SD_GenSpdCornerFreq,  accINFILE(1),   ErrVar, CntrPar%SD_Mode == 0, UnEc)
         CALL ParseInput(FileLines,  'SD_Time',               CntrPar%SD_Time,      accINFILE(1),   ErrVar, CntrPar%SD_Mode == 0, UnEc)
         CALL ParseInput(FileLines,  'SD_Method',             CntrPar%SD_Method,    accINFILE(1),   ErrVar, CntrPar%SD_Mode == 0, UnEc)
-        CALL ParseInput(FileLines,  'SD_Stage_N',            CntrPar%SD_Stage_N,    accINFILE(1),   ErrVar, CntrPar%SD_Mode == 0, UnEc)
-        CALL ParseAry(FileLines,    'SD_StageTime',         CntrPar%SD_StageTime,      CntrPar%SD_Stage_N,   accINFILE(1),   ErrVar, CntrPar%SD_Method .NE. 1, UnEc)
-        CALL ParseAry(FileLines,    'SD_StagePitch',         CntrPar%SD_StagePitch,      CntrPar%SD_Stage_N,   accINFILE(1),   ErrVar, CntrPar%SD_Method .NE. 2, UnEc)
-        CALL ParseAry(FileLines,    'SD_MaxTorqueRate',      CntrPar%SD_MaxTorqueRate,   CntrPar%SD_Stage_N,   accINFILE(1),   ErrVar, CntrPar%SD_Mode == 0, UnEc)
-        CALL ParseAry(FileLines,    'SD_MaxPitchRate',       CntrPar%SD_MaxPitchRate,    CntrPar%SD_Stage_N,   accINFILE(1),   ErrVar, CntrPar%SD_Mode == 0, UnEc)
+        CALL ParseInput(FileLines,  'SD_MaxTorqueRate',      CntrPar%SD_MaxTorqueRate,   accINFILE(1),   ErrVar, CntrPar%SD_Mode == 0, UnEc)
+        CALL ParseInput(FileLines,  'SD_MaxPitchRate',       CntrPar%SD_MaxPitchRate,    accINFILE(1),   ErrVar, CntrPar%SD_Mode == 0, UnEc)
         IF (ErrVar%aviFAIL < 0) RETURN
 
         !------------ FLOATING ------------
@@ -624,6 +619,20 @@ CONTAINS
         CALL ParseInput(FileLines, 'AWC_phaseoffset', CntrPar%AWC_phaseoffset,                        accINFILE(1), ErrVar, CntrPar%AWC_Mode == 0, UnEc)
         CALL ParseAry(  FileLines, 'AWC_CntrGains',   CntrPar%AWC_CntrGains,  2,                      accINFILE(1), ErrVar, CntrPar%AWC_Mode < 3, UnEc)
         IF (ErrVar%aviFAIL < 0) RETURN
+
+        !------------ Platform Pitch and Generator Torque PR input ------------
+        CALL ParseAry(FileLines,   'PPPR_CntrGains_phi',     CntrPar%PPPR_CntrGains_phi,   2,    accINFILE(1),    ErrVar,   CntrPar%PPPR_Mode==1,  UnEc)
+        CALL ParseAry(FileLines,   'PPPR_CntrGains_omega',   CntrPar%PPPR_CntrGains_omega, 2,    accINFILE(1),    ErrVar,   CntrPar%PPPR_Mode==1,  UnEc)
+        CALL ParseInput(FileLines,   'PPPR_freq_phi',          CntrPar%PPPR_freq_phi,              accINFILE(1),    ErrVar,   CntrPar%PPPR_Mode==1,  UnEc)
+        CALL ParseInput(FileLines,   'PPPR_freq_omega',        CntrPar%PPPR_freq_omega,            accINFILE(1),    ErrVar,   CntrPar%PPPR_Mode==1,  UnEc)
+        CALL ParseInput(FileLines,   'PPPR_amp_phi',           CntrPar%PPPR_amp_phi,               accINFILE(1),    ErrVar,   CntrPar%PPPR_Mode==1,  UnEc)
+        CALL ParseInput(FileLines,   'PPPR_amp_omega',         CntrPar%PPPR_amp_omega,             accINFILE(1),    ErrVar,   CntrPar%PPPR_Mode==1,  UnEc)
+	CALL ParseInput(FileLines,   'Phi_phaseoffset',        CntrPar%Phi_phaseoffset,            accINFILE(1),    ErrVar,   CntrPar%PPPR_Mode==1,  UnEc)
+        CALL ParseInput(FileLines,   'Omega_phaseoffset',      CntrPar%Omega_phaseoffset,          accINFILE(1),    ErrVar,   CntrPar%PPPR_Mode==1,  UnEc)
+
+
+        IF (ErrVar%aviFAIL < 0) RETURN
+
 
         !------------ External control interface ------------
         CALL ParseInput(FileLines, 'DLL_FileName',  CntrPar%DLL_FileName,   accINFILE(1), ErrVar,   CntrPar%Ext_Mode == 0, UnEc)
@@ -1078,7 +1087,7 @@ CONTAINS
         ENDIF
         
         ! SU_Mode
-        IF ((CntrPar%SU_Mode < 0) .OR. (CntrPar%SU_Mode > 1)) THEN
+        IF ((CntrPar%SU_Mode < 0) .OR. (CntrPar%SD_Mode > 1)) THEN
             ErrVar%aviFAIL = -1
             ErrVar%ErrMsg  = 'SU_Mode must be 0 or 1.'
         ENDIF
@@ -1531,43 +1540,21 @@ CONTAINS
         IF (CntrPar%SD_Mode > 0) THEN
         
             ! SD_Method
-            IF (CntrPar%SD_Method < 1 .OR. CntrPar%SD_Method > 2) THEN
+            IF (CntrPar%SD_Method /= 1) THEN
                 ErrVar%aviFAIL = -1
-                ErrVar%ErrMsg  = 'SD_Method must be 1 or 2.'
+                ErrVar%ErrMsg  = 'SD_Method must be 1.'
             ENDIF
 
             ! SD_MaxPitchRate
-            IF (MAXVAL(CntrPar%SD_MaxPitchRate) > CntrPar%PC_MaxRat) THEN
+            IF (CntrPar%SD_MaxPitchRate > CntrPar%PC_MaxRat) THEN
                 ErrVar%aviFAIL = -1
-                ErrVar%ErrMsg  = 'SD_MaxPitchRate(s) should be less than or equal to PC_MaxRat.'
+                ErrVar%ErrMsg  = 'SD_MaxPitchRate should be less or equal to PC_MaxRat.'
             ENDIF
 
-                
             ! SD_MaxTorqueRate
-            IF (MAXVAL(CntrPar%SD_MaxTorqueRate) > CntrPar%VS_MaxRat) THEN
+            IF (CntrPar%SD_MaxTorqueRate > CntrPar%VS_MaxRat) THEN
                 ErrVar%aviFAIL = -1
-                ErrVar%ErrMsg  = 'SD_MaxTorqueRate(s) should be less than or equal to VS_MaxRat.'
-            ENDIF
-
-            IF (CntrPar%SD_Stage_N < 1) THEN
-                ErrVar%aviFAIL = -1
-                ErrVar%ErrMsg  = 'SD_Stage_N must be greater than or equal to 1.'
-            ENDIF
-
-            IF (CntrPar%SD_Method == 1) THEN
-                ! SD_StageTime must be greater than zero
-                IF ( MINVAL(CntrPar%SD_StageTime) < 0.0) THEN
-                    ErrVar%aviFAIL = -1
-                    ErrVar%ErrMsg  = 'SD_StageTime(s) must be greater than or equal to zero.'
-                ENDIF
-
-            ELSEIF (CntrPar%SD_Method == 2) THEN
-                ! SD_StagePitch must be increasing
-                IF (.NOT. NonDecreasing(CntrPar%SD_StagePitch)) THEN
-                    ErrVar%aviFAIL = -1
-                    ErrVar%ErrMsg  = 'SD_StagePitch must be non-decreasing.'
-                ENDIF
-
+                ErrVar%ErrMsg  = 'SD_MaxTorqueRate should be less or equal to VS_MaxRat.'
             ENDIF
         ENDIF
 
